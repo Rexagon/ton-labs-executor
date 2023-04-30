@@ -13,7 +13,7 @@
 
 use ton_block::{
     ConfigParam18, ConfigParams, FundamentalSmcAddresses, GasLimitsPrices, GlobalCapabilities, Grams,
-    MsgAddressInt, MsgForwardPrices, StorageInfo, StoragePrices, StorageUsedShort,
+    MsgAddressInt, MsgForwardPrices, StorageInfo, StoragePrices, StorageUsedShort, TransactionTreeLimitParams
 };
 use ton_types::{Cell, Result, UInt256};
 
@@ -207,6 +207,7 @@ pub struct BlockchainConfig {
     special_contracts: FundamentalSmcAddresses,
     capabilities: u64,
     global_version: u32,
+    tree_limits: Option<TransactionTreeLimitParams>,
     raw_config: ConfigParams,
 }
 
@@ -221,13 +222,14 @@ impl Default for BlockchainConfig {
             special_contracts: Self::get_default_special_contracts(),
             raw_config: Self::get_defult_raw_config(),
             global_version: 0,
+            tree_limits: None,
             capabilities: 0x2e,
         }
     }
 }
 
 impl BlockchainConfig {
-  
+
     fn get_default_special_contracts() -> FundamentalSmcAddresses {
         let mut map = FundamentalSmcAddresses::default();
         map.add_key(&UInt256::with_array([0x33u8; 32])).unwrap();
@@ -256,6 +258,7 @@ impl BlockchainConfig {
             special_contracts: config.fundamental_smc_addr()?,
             capabilities: config.capabilities(),
             global_version: config.global_version(),
+            tree_limits: config.transaction_tree_limits()?,
             raw_config: config,
         })
     }
@@ -314,7 +317,7 @@ impl BlockchainConfig {
             // special account adresses are stored in hashmap
             // config account is special too
             Ok(
-                self.raw_config.config_addr == account_id || 
+                self.raw_config.config_addr == account_id ||
                 self.special_contracts.get_raw(account_id)?.is_some()
             )
         } else {
@@ -336,5 +339,9 @@ impl BlockchainConfig {
 
     pub fn capabilites(&self) -> u64 {
         self.capabilities
+    }
+
+    pub fn tree_limits(&self) -> &Option<TransactionTreeLimitParams> {
+        &self.tree_limits
     }
 }

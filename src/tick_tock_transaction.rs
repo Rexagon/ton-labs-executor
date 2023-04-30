@@ -15,7 +15,7 @@ use crate::{blockchain_config::BlockchainConfig, ExecuteParams, TransactionExecu
 
 use std::sync::atomic::Ordering;
 use ton_block::{
-    Account, CurrencyCollection, Grams, Message, TrComputePhase, Transaction, 
+    Account, CurrencyCollection, Grams, Message, TrComputePhase, Transaction,
     TransactionDescr, TransactionDescrTickTock, TransactionTickTock, Serializable
 };
 use ton_types::{error, fail, Result, HashmapType, SliceData};
@@ -67,7 +67,7 @@ impl TransactionExecutor for TickTockTransactionExecutor {
         let is_masterchain = true;
         let is_special = true;
         let lt = std::cmp::max(
-            account.last_tr_time().unwrap_or_default(), 
+            account.last_tr_time().unwrap_or_default(),
             params.last_tr_lt.load(Ordering::Relaxed)
         );
         let mut tr = Transaction::with_address_and_status(account_id.clone(), account.status());
@@ -129,7 +129,7 @@ impl TransactionExecutor for TickTockTransactionExecutor {
             .push(int!(-2));
         log::debug!(target: "executor", "compute_phase {}", lt);
         let (compute_ph, actions, new_data) = match self.compute_phase(
-            None, 
+            None,
             account,
             &mut acc_balance,
             &CurrencyCollection::default(),
@@ -158,16 +158,17 @@ impl TransactionExecutor for TickTockTransactionExecutor {
                     log::debug!(target: "executor", "compute_phase: TrComputePhase::Vm success");
                     log::debug!(target: "executor", "action_phase {}", lt);
                     match self.action_phase_with_copyleft(
-                        &mut tr, 
-                        account, 
-                        &original_acc_balance, 
-                        &mut acc_balance, 
-                        &mut CurrencyCollection::default(), 
-                        &Grams::zero(), 
-                        actions.unwrap_or_default(), 
+                        &mut tr,
+                        account,
+                        &original_acc_balance,
+                        &mut acc_balance,
+                        &mut CurrencyCollection::default(),
+                        &Grams::zero(),
+                        actions.unwrap_or_default(),
                         new_data,
                         &account_address,
-                        is_special
+                        is_special,
+                        0
                     ) {
                         Ok(ActionPhaseResult{phase, messages, .. }) => {
                             out_msgs = messages;
@@ -189,7 +190,7 @@ impl TransactionExecutor for TickTockTransactionExecutor {
                 }
             }
             TrComputePhase::Skipped(ref skipped) => {
-                log::debug!(target: "executor", 
+                log::debug!(target: "executor",
                     "compute_phase: skipped: reason {:?}", skipped.reason);
                 None
             }
@@ -197,7 +198,7 @@ impl TransactionExecutor for TickTockTransactionExecutor {
 
         description.aborted = match description.action {
             Some(ref phase) => {
-                log::debug!(target: "executor", 
+                log::debug!(target: "executor",
                     "action_phase: present: success={}, err_code={}", phase.success, phase.result_code);
                 !phase.success
             }
@@ -206,7 +207,7 @@ impl TransactionExecutor for TickTockTransactionExecutor {
                 true
             }
         };
-        
+
         log::debug!(target: "executor", "Desciption.aborted {}", description.aborted);
         tr.set_end_status(account.status());
         account.set_balance(acc_balance);

@@ -73,15 +73,15 @@ impl TransactionExecutor for OrdinaryTransactionExecutor {
         #[cfg(feature="timings")]
         let mut now = Instant::now();
 
-        let revert_anycast = 
+        let revert_anycast =
             self.config.global_version() >= VERSION_BLOCK_REVERT_MESSAGES_WITH_ANYCAST_ADDRESSES;
 
         let in_msg = in_msg.ok_or_else(|| error!("Ordinary transaction must have input message"))?;
         let in_msg_cell = in_msg.serialize()?; // TODO: get from outside
         let is_masterchain = in_msg.dst_workchain_id() == Some(MASTERCHAIN_ID);
         log::debug!(
-            target: "executor", 
-            "Ordinary transaction executing, in message id: {:x}", 
+            target: "executor",
+            "Ordinary transaction executing, in message id: {:x}",
             in_msg_cell.repr_hash()
         );
         let (bounce, is_ext_msg) = match in_msg.header() {
@@ -117,7 +117,7 @@ impl TransactionExecutor for OrdinaryTransactionExecutor {
 
         let is_special = self.config.is_special_account(account_address)?;
         let lt = std::cmp::max(
-            account.last_tr_time().unwrap_or(0), 
+            account.last_tr_time().unwrap_or(0),
             std::cmp::max(params.last_tr_lt.load(Ordering::Relaxed), in_msg.lt().unwrap_or(0) + 1)
         );
         let mut tr = Transaction::with_address_and_status(account_id, account.status());
@@ -281,7 +281,8 @@ impl TransactionExecutor for OrdinaryTransactionExecutor {
                         actions.unwrap_or_default(),
                         new_data,
                         account_address,
-                        is_special
+                        is_special,
+                        params.depth,
                     ) {
                         Ok(ActionPhaseResult{phase, messages, copyleft_reward}) => {
                             out_msgs = messages;
@@ -343,9 +344,9 @@ impl TransactionExecutor for OrdinaryTransactionExecutor {
                 log::debug!(target: "executor", "bounce_phase");
                 description.bounce = match self.bounce_phase(
                     msg_balance.clone(),
-                    &mut acc_balance, 
-                    &compute_phase_gas_fees, 
-                    in_msg, 
+                    &mut acc_balance,
+                    &compute_phase_gas_fees,
+                    in_msg,
                     &mut tr,
                     account_address,
                     params.block_version,
@@ -370,8 +371,8 @@ impl TransactionExecutor for OrdinaryTransactionExecutor {
             } else if account.is_none() && !acc_balance.is_zero()? {
                 *account = Account::uninit(
                     account_address.clone(),
-                    0, 
-                    last_paid, 
+                    0,
+                    last_paid,
                     acc_balance.clone()
                 );
             }
