@@ -13,7 +13,8 @@
 
 use ton_block::{
     ConfigParam18, ConfigParams, FundamentalSmcAddresses, GasLimitsPrices, GlobalCapabilities, Grams,
-    MsgAddressInt, MsgForwardPrices, StorageInfo, StoragePrices, StorageUsedShort, TransactionTreeLimitParams
+    MsgAddressInt, MsgForwardPrices, StorageInfo, StoragePrices, StorageUsedShort, TransactionTreeLimits,
+    TransactionTreeStats, Transaction
 };
 use ton_types::{Cell, Result, UInt256};
 
@@ -207,7 +208,7 @@ pub struct BlockchainConfig {
     special_contracts: FundamentalSmcAddresses,
     capabilities: u64,
     global_version: u32,
-    tree_limits: Option<TransactionTreeLimitParams>,
+    tx_tree_limits: Option<TransactionTreeLimits>,
     raw_config: ConfigParams,
 }
 
@@ -222,7 +223,7 @@ impl Default for BlockchainConfig {
             special_contracts: Self::get_default_special_contracts(),
             raw_config: Self::get_defult_raw_config(),
             global_version: 0,
-            tree_limits: None,
+            tx_tree_limits: None,
             capabilities: 0x2e,
         }
     }
@@ -258,7 +259,7 @@ impl BlockchainConfig {
             special_contracts: config.fundamental_smc_addr()?,
             capabilities: config.capabilities(),
             global_version: config.global_version(),
-            tree_limits: config.transaction_tree_limits()?,
+            tx_tree_limits: config.transaction_tree_limits()?,
             raw_config: config,
         })
     }
@@ -325,6 +326,48 @@ impl BlockchainConfig {
         }
     }
 
+    pub fn calc_tx_tree_depth_diff(&self, tx_tree_stats: TransactionTreeStats, transaction: &Transaction) -> Result<TransactionTreeDiff> {
+        use ton_block::{Message, Deserializable};
+
+        let mut msg_count = 0u32;
+        transaction.out_msgs.iterate_slices(|slice| {
+            let msg_cell = slice.reference(0)?;
+            let msg = Message::construct_from_cell(msg_cell)?;
+            msg_count += msg.dst().is_some() as u32;
+            Ok(true)
+        })?;
+        Ok(self.calc_tx_tree_depth_diff_raw(tx_tree_stats, msg_count))
+    }
+
+    pub fn calc_tx_tree_depth_diff_raw(&self, tx_tree_stats: TransactionTreeStats, msg_count: u32) -> TransactionTreeDiff {
+        const FRAC: usize = 16;
+
+        let Some(tree_limits) = &self.tx_tree_limits else {
+            return TransactionTreeDiff::Applied(TransactionTreeStats {
+                depth: tx_tree_stats.depth.saturating_add(1),
+                cumulative_width: 1,
+            });
+        };
+
+        let depth_width_diff = (((tx_tree_stats.cumulative_width as u64) << FRAC) *
+            (tree_limits.width_multiplier as u64) /
+            ((tree_limits.max_cumulative_width as u64) << FRAC)) >> FRAC;
+        let new_depth = tx_tree_stats.depth.saturating_add(depth_width_diff.max(1) as u32);
+
+        let new_width = tx_tree_stats.cumulative_width.max(1).saturating_mul(msg_count);
+
+        if new_width > tree_limits.max_cumulative_width {
+            TransactionTreeDiff::RejectedByWidth(new_width)
+        } else if new_depth > tree_limits.max_depth {
+            TransactionTreeDiff::RejectedByDepth(new_depth)
+        } else {
+            TransactionTreeDiff::Applied(TransactionTreeStats {
+                depth: new_depth,
+                cumulative_width: new_width,
+            })
+        }
+    }
+
     pub fn global_version(&self) -> u32 {
         self.global_version
     }
@@ -341,7 +384,74 @@ impl BlockchainConfig {
         self.capabilities
     }
 
-    pub fn tree_limits(&self) -> &Option<TransactionTreeLimitParams> {
-        &self.tree_limits
+    pub fn tx_tree_limits(&self) -> &Option<TransactionTreeLimits> {
+        &self.tx_tree_limits
+    }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub enum TransactionTreeDiff {
+    Applied(TransactionTreeStats),
+    RejectedByWidth(u32),
+    RejectedByDepth(u32),
+}
+
+impl TransactionTreeDiff {
+    pub fn into_plain(self) -> std::result::Result<TransactionTreeStats, (i32, i32)> {
+        match self {
+            TransactionTreeDiff::Applied(stats) => Ok(stats),
+            TransactionTreeDiff::RejectedByDepth(depth) => Err((crate::RESULT_CODE_TOO_DEEP_TX_TREE, depth as i32)),
+            TransactionTreeDiff::RejectedByWidth(width) => Err((crate::RESULT_CODE_TOO_WIDE_TX_TREE, width as i32)),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_diff() {
+        const FRAC: usize = 16;
+
+        let mut tx_tree_stats = TransactionTreeStats::default();
+        let tree_limits = TransactionTreeLimits {
+            max_depth: 1000,
+            width_multiplier: 10 << FRAC,
+            max_cumulative_width: 1000,
+        };
+
+        let msg_count = 2u32;
+
+        for i in 0..10 {
+            println!("{i}:\nSTATS: {tx_tree_stats:?}");
+
+            println!(" - cumulative width:     {}", (tx_tree_stats.cumulative_width as u64) << FRAC);
+            println!(" - multiplier:           {}", tree_limits.width_multiplier as u64);
+            println!(" - max cumulative width: {}", (tree_limits.max_cumulative_width as u64) << FRAC);
+
+            let depth_width_diff = (((tx_tree_stats.cumulative_width as u64) << FRAC) *
+                (tree_limits.width_multiplier as u64) /
+                ((tree_limits.max_cumulative_width as u64) << FRAC)) >> FRAC;
+            let new_depth = tx_tree_stats.depth.saturating_add(depth_width_diff.max(1) as u32);
+
+            let new_width = tx_tree_stats.cumulative_width.max(1).saturating_mul(msg_count);
+
+            println!("DEPTH WIDTH DIFF: {depth_width_diff}, NEW DEPTH: {new_depth}, NEW WIDTH: {new_width}");
+
+            let diff = if new_width > tree_limits.max_cumulative_width {
+                TransactionTreeDiff::RejectedByWidth(new_width)
+            } else if new_depth > tree_limits.max_depth {
+                TransactionTreeDiff::RejectedByDepth(new_depth)
+            } else {
+                tx_tree_stats = TransactionTreeStats {
+                    depth: new_depth,
+                    cumulative_width: new_width,
+                };
+                TransactionTreeDiff::Applied(tx_tree_stats.clone())
+            };
+
+            println!("{diff:?}\n");
+        }
     }
 }

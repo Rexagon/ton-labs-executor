@@ -282,7 +282,7 @@ impl TransactionExecutor for OrdinaryTransactionExecutor {
                         new_data,
                         account_address,
                         is_special,
-                        params.depth,
+                        params.tx_tree_stats,
                     ) {
                         Ok(ActionPhaseResult{phase, messages, copyleft_reward}) => {
                             out_msgs = messages;

@@ -33,6 +33,7 @@ use ton_block::{
     GetRepresentationHash, GlobalCapabilities, Grams, HashUpdate, Message, MsgAddressInt,
     OutAction, OutActions, Serializable, StateInit, StorageUsedShort, TrActionPhase, TrBouncePhase,
     TrComputePhase, TrComputePhaseVm, TrCreditPhase, TrStoragePhase, Transaction, WorkchainFormat,
+    TransactionTreeStats,
     BASE_WORKCHAIN_ID, MASTERCHAIN_ID, RESERVE_ALL_BUT, RESERVE_IGNORE_ERROR, RESERVE_PLUS_ORIG,
     RESERVE_REVERSE, RESERVE_VALID_MODES, SENDMSG_ALL_BALANCE, SENDMSG_DELETE_IF_EMPTY,
     SENDMSG_IGNORE_ERROR, SENDMSG_PAY_FEE_SEPARATELY, SENDMSG_REMAINING_MSG_BALANCE,
@@ -49,21 +50,22 @@ use ton_vm::{
     stack::Stack,
 };
 
-const RESULT_CODE_ACTIONLIST_INVALID:            i32 = 32;
-const RESULT_CODE_TOO_MANY_ACTIONS:              i32 = 33;
-const RESULT_CODE_UNKNOWN_OR_INVALID_ACTION:     i32 = 34;
-const RESULT_CODE_INCORRECT_SRC_ADDRESS:         i32 = 35;
-const RESULT_CODE_INCORRECT_DST_ADDRESS:         i32 = 36;
-const RESULT_CODE_NOT_ENOUGH_GRAMS:              i32 = 37;
-const RESULT_CODE_NOT_ENOUGH_EXTRA:              i32 = 38;
-const RESULT_CODE_INVALID_BALANCE:               i32 = 40;
-const RESULT_CODE_BAD_ACCOUNT_STATE:             i32 = 41;
-const RESULT_CODE_ANYCAST:                       i32 = 50;
-const RESULT_CODE_NOT_FOUND_LICENSE:             i32 = 51;
-const RESULT_CODE_TOO_DEEP_TX_TREE:              i32 = 52;
-const RESULT_CODE_UNSUPPORTED:                   i32 = -1;
+pub const RESULT_CODE_ACTIONLIST_INVALID:            i32 = 32;
+pub const RESULT_CODE_TOO_MANY_ACTIONS:              i32 = 33;
+pub const RESULT_CODE_UNKNOWN_OR_INVALID_ACTION:     i32 = 34;
+pub const RESULT_CODE_INCORRECT_SRC_ADDRESS:         i32 = 35;
+pub const RESULT_CODE_INCORRECT_DST_ADDRESS:         i32 = 36;
+pub const RESULT_CODE_NOT_ENOUGH_GRAMS:              i32 = 37;
+pub const RESULT_CODE_NOT_ENOUGH_EXTRA:              i32 = 38;
+pub const RESULT_CODE_INVALID_BALANCE:               i32 = 40;
+pub const RESULT_CODE_BAD_ACCOUNT_STATE:             i32 = 41;
+pub const RESULT_CODE_ANYCAST:                       i32 = 50;
+pub const RESULT_CODE_NOT_FOUND_LICENSE:             i32 = 51;
+pub const RESULT_CODE_TOO_DEEP_TX_TREE:              i32 = 52;
+pub const RESULT_CODE_TOO_WIDE_TX_TREE:              i32 = 53;
+pub const RESULT_CODE_UNSUPPORTED:                   i32 = -1;
 
-const MAX_ACTIONS: usize = 255;
+pub const MAX_ACTIONS: usize = 255;
 
 const MAX_MSG_BITS: usize = 1 << 21;
 const MAX_MSG_CELLS: usize = 1 << 13;
@@ -91,7 +93,7 @@ pub struct ExecuteParams {
     pub block_version: u32,
     #[cfg(feature = "signature_with_id")]
     pub signature_id: i32,
-    pub depth: u32,
+    pub tx_tree_stats: TransactionTreeStats,
 }
 
 pub struct ActionPhaseResult {
@@ -126,7 +128,7 @@ impl Default for ExecuteParams {
             block_version: 0,
             #[cfg(feature = "signature_with_id")]
             signature_id: 0,
-            depth: 0,
+            tx_tree_stats: Default::default(),
         }
     }
 }
@@ -543,11 +545,11 @@ pub trait TransactionExecutor {
         new_data: Option<Cell>,
         my_addr: &MsgAddressInt,
         is_special: bool,
-        depth: u32,
+        tx_tree_stats: TransactionTreeStats,
     ) -> Result<(TrActionPhase, Vec<Message>)> {
         let result = self.action_phase_with_copyleft(
             tr, acc, original_acc_balance, acc_balance, msg_remaining_balance,
-            compute_phase_fees, actions_cell, new_data, my_addr, is_special, depth)?;
+            compute_phase_fees, actions_cell, new_data, my_addr, is_special, tx_tree_stats)?;
         Ok((result.phase, result.messages))
     }
 
@@ -563,7 +565,7 @@ pub trait TransactionExecutor {
         new_data: Option<Cell>,
         my_addr: &MsgAddressInt,
         is_special: bool,
-        depth: u32,
+        tx_tree_stats: TransactionTreeStats,
     ) -> Result<ActionPhaseResult> {
         let mut out_msgs = vec![];
         let mut acc_copy = acc.clone();
@@ -621,22 +623,17 @@ pub trait TransactionExecutor {
             return Ok(ActionPhaseResult::from_phase(phase));
         }
 
-        if let Some(tree_limits) = self.config().tree_limits() {
-            let depth_diff = if tree_limits.track_width {
-                actions
-                    .iter()
-                    .filter(|action| {
-                        matches!(action, OutAction::SendMsg { out_msg, .. } if out_msg.dst().is_some())
-                    })
-                    .count() as u32
-            } else {
-                1
-            };
-            let next_depth = depth.saturating_add(depth_diff);
+        if self.config().has_capability(GlobalCapabilities::CapTrackTxTreeStats) {
+            let msg_count = actions
+                .iter()
+                .filter(|action| {
+                    matches!(action, OutAction::SendMsg { out_msg, .. } if out_msg.dst().is_some())
+                })
+                .count() as u32;
 
-            if next_depth >= tree_limits.max_depth {
-                phase.result_code = RESULT_CODE_TOO_DEEP_TX_TREE;
-                phase.result_arg = Some(next_depth as i32);
+            if let Err((err, arg)) = self.config().calc_tx_tree_depth_diff_raw(tx_tree_stats, msg_count).into_plain() {
+                phase.result_code = err;
+                phase.result_arg = Some(arg);
                 return Ok(ActionPhaseResult::from_phase(phase));
             }
         }
